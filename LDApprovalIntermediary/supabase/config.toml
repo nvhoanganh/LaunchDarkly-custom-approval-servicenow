@@ -1,0 +1,4 @@
+project_id = "tbwanmbaxlalvjkqhxng"
+
+[functions.ld-approval]
+verify_jwt = false

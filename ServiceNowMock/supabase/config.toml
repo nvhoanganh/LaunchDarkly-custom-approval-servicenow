@@ -1,0 +1,4 @@
+project_id = "trhyprcfbjsjothusmco"
+
+[functions.servicenow]
+verify_jwt = false
