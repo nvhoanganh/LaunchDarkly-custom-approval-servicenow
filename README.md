@@ -173,6 +173,27 @@ When a developer makes a flag change in a configured environment, the **Save cha
 
 ![Intermediary audit log showing declined](docs/screenshots/delcined.png)
 
+## Try it yourself
+
+Pre-deployed instances are available — no setup required:
+
+| App | URL |
+|-----|-----|
+| LD Approval Intermediary | https://ld-approval-intermediary.lovable.app |
+| ServiceNow CR Simulator | https://service-now-changerequest-demo.lovable.app |
+
+**To configure LaunchDarkly:**
+- Open https://ld-approval-intermediary.lovable.app — the **Webhook base URL** and **API Token** are displayed on the health card with copy buttons
+- In LaunchDarkly Custom Approvals config, set:
+  - **Custom approval service base URL** → `https://tbwanmbaxlalvjkqhxng.supabase.co/functions/v1/ld-approval`
+  - **API Token** → copy from the app using the **Copy** button
+
+**To create, approve, or reject Change Requests:**
+- Go to https://service-now-changerequest-demo.lovable.app
+- Create a CR, then use **Approve** / **Reject** / **Reset** buttons to control its state while LD polls
+
+---
+
 ## Deploying your own instance
 
 ### I have a real ServiceNow instance
