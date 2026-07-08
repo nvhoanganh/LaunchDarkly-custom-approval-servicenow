@@ -288,10 +288,110 @@ App Service Plan.
 
 ## Real ServiceNow integration
 
-To connect to a real ServiceNow instance instead of the mock:
+The LD Approval Intermediary UI has a **ServiceNow Source** toggle (Mock / Real) in the Health card. Set it to **Real** and the edge function authenticates against your ServiceNow instance instead of the mock.
 
-1. In ServiceNow: **System OAuth → Application Registry → New → Create an OAuth API endpoint for external clients**
-2. Note the Client ID and Client Secret
-3. Update the edge function's `SNOW_BASE` URL and OAuth credentials to point at your ServiceNow instance
-4. Set `APPROVED_STATE` to the numeric state value your team uses for approved CRs (commonly `-1` for Implement)
-5. Set `REJECTED_STATES` to numeric state values for cancelled/rejected CRs (commonly `4` for Cancelled, `8` for Closed Incomplete)
+### Step 1 — Create an OAuth Application Registry
+
+Navigate to: `https://<your-instance>.service-now.com/oauth_entity.do?sys_id=-1`
+
+Fill in:
+- **Name**: LD Approval (or any name)
+- **Client Secret**: leave blank — ServiceNow auto-generates one
+- **Client Type**: Integration as a Service
+- **Active**: checked
+
+Click **Submit**, then reopen the record to copy the generated **Client ID** and **Client Secret**.
+
+### Step 2 — Create a service account user
+
+Navigate to: `https://<your-instance>.service-now.com/sys_user.do?sys_id=-1`
+
+Fill in:
+- **User ID**: `ld_integration` (or any name)
+- **Identity type**: Application
+- **Internal Integration User**: checked
+- **Password needs reset**: unchecked
+- **Active**: checked
+
+Click **Submit**. Reopen the user → **Roles** tab → **Edit** → add role `itil` → Save. Then click **Set Password** to assign a password.
+
+### Step 3 — Update the edge function credentials
+
+Open `LDApprovalIntermediary/supabase/functions/ld-approval/index.ts` and update the constants at the top:
+
+```typescript
+const SNOW_REAL_BASE = "https://<your-instance>.service-now.com";
+const SNOW_REAL_CLIENT_ID = "<your-client-id>";
+const SNOW_REAL_CLIENT_SECRET = "<your-client-secret>";
+const SNOW_REAL_USERNAME = "ld_integration";
+const SNOW_REAL_PASSWORD = "<your-service-account-password>";
+```
+
+Redeploy via Lovable (Publish) or `supabase functions deploy ld-approval`.
+
+### Step 4 — Verify connectivity
+
+The Health card **Online** badge checks ServiceNow connectivity on load and every 30 seconds. It turns red if authentication or the CR table lookup fails.
+
+You can also verify manually:
+
+```bash
+# 1. Get OAuth token
+TOKEN=$(curl -s -X POST "https://<your-instance>.service-now.com/oauth_token.do" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=password" \
+  --data-urlencode "client_id=<client-id>" \
+  --data-urlencode "client_secret=<client-secret>" \
+  --data-urlencode "username=ld_integration" \
+  --data-urlencode "password=<password>" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# 2. Query change_request table
+curl -s "https://<your-instance>.service-now.com/api/now/table/change_request?sysparm_limit=1&sysparm_fields=number,state" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/json"
+```
+
+### CR state values
+
+| State value | Meaning | LD decision |
+|-------------|---------|-------------|
+| `-1` | Implement | `approved` |
+| `4` | Cancelled | `declined` |
+| anything else | New, Assess, Authorize, Scheduled, etc. | `pending` |
+
+### Creating a Change Request
+
+Navigate to: `https://<your-instance>.service-now.com/change_request.do?sys_id=-1`
+
+Fill in Short description → Submit. Note the CR number (e.g. `CHG0030001`).
+
+### Advancing the CR to Implement (approved)
+
+The Normal change model requires CAB approvals before reaching Implement state:
+
+1. Open the CR → scroll to **Approvers** related list
+2. Open each approver record → set **State** to `Approved` → Update
+3. Once all approvals granted, click **Implement** in the pipeline bar at top
+
+This sets state to `-1` which LD maps to `approved`.
+
+### Rejecting a CR
+
+Set **State** dropdown to **Cancelled** → click **Update**. Sets state to `4` → LD maps to `declined`.
+
+### Resetting CR state for re-testing
+
+The Normal change model enforces forward-only state transitions. To reset a CR back to an earlier state, use a background script.
+
+Navigate to: `https://<your-instance>.service-now.com/sys.scripts.do`
+
+```javascript
+var gr = new GlideRecord('change_request');
+gr.get('number', 'CHG0030001');  // replace with your CR number
+gr.setWorkflow(false);           // bypass business rules
+gr.setValue('state', '-2');      // -2=Scheduled, 3=Authorize, 2=Assess, 1=New
+gr.update();
+gs.info('state: ' + gr.state);
+```
+
+State reference: `1`=New, `2`=Assess, `3`=Authorize, `-2`=Scheduled, `-1`=Implement, `4`=Cancelled.

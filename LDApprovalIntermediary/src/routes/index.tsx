@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Check, Copy, CircleCheck, Trash2 } from "lucide-react";
+import { Check, Copy, CircleCheck, CircleAlert, Loader2, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
@@ -87,6 +87,66 @@ function Index() {
   const [rows, setRows] = useState<ApprovalRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [clearing, setClearing] = useState(false);
+  const [snowMode, setSnowMode] = useState<"mock" | "real">("real");
+  const [savingMode, setSavingMode] = useState(false);
+  const [health, setHealth] = useState<{ status: "checking" | "ok" | "error"; error?: string }>({
+    status: "checking",
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      if (!cancelled) setHealth((h) => (h.status === "ok" || h.status === "error" ? h : { status: "checking" }));
+      try {
+        const res = await fetch(`${ENDPOINT}/api/health/servicenow`, {
+          headers: { Authorization: `Bearer ${API_TOKEN}` },
+        });
+        const body = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (body?.status === "ok") {
+          setHealth({ status: "ok" });
+        } else {
+          setHealth({ status: "error", error: body?.error ?? `HTTP ${res.status}` });
+        }
+      } catch (e) {
+        if (cancelled) return;
+        setHealth({ status: "error", error: e instanceof Error ? e.message : String(e) });
+      }
+    };
+    check();
+    const id = setInterval(check, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from("app_settings")
+        .select("value")
+        .eq("key", "servicenow_mode")
+        .maybeSingle();
+      if (data?.value === "mock" || data?.value === "real") setSnowMode(data.value);
+    })();
+  }, []);
+
+  const updateMode = async (mode: "mock" | "real") => {
+    if (mode === snowMode) return;
+    setSavingMode(true);
+    const prev = snowMode;
+    setSnowMode(mode);
+    const { error } = await supabase
+      .from("app_settings")
+      .upsert({ key: "servicenow_mode", value: mode, updated_at: new Date().toISOString() });
+    setSavingMode(false);
+    if (error) {
+      console.error(error);
+      setSnowMode(prev);
+      alert("Failed to update mode: " + error.message);
+    }
+  };
 
   const fetchRows = async () => {
     const { data, error } = await supabase
@@ -152,14 +212,66 @@ function Index() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0">
             <CardTitle className="text-base">Health</CardTitle>
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-100 px-2.5 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900">
-              <CircleCheck className="h-3.5 w-3.5" />
-              Online
-            </span>
+            {health.status === "ok" ? (
+              <span
+                title="ServiceNow reachable"
+                className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-100 px-2.5 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900"
+              >
+                <CircleCheck className="h-3.5 w-3.5" />
+                Online
+              </span>
+            ) : health.status === "error" ? (
+              <span
+                title={health.error ?? "ServiceNow unreachable"}
+                className="inline-flex items-center gap-1.5 rounded-full border border-rose-200 bg-rose-100 px-2.5 py-0.5 text-xs font-medium text-rose-800 dark:bg-rose-950 dark:text-rose-300 dark:border-rose-900"
+              >
+                <CircleAlert className="h-3.5 w-3.5" />
+                Offline
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:border-slate-800">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Checking…
+              </span>
+            )}
           </CardHeader>
           <CardContent className="space-y-4">
             <CopyBox label="Webhook base URL" value={ENDPOINT} />
             <CopyBox label="API Token" value={API_TOKEN} mask />
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                ServiceNow Source
+              </div>
+              <div className="inline-flex rounded-md border bg-muted/40 p-1">
+                {(["mock", "real"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    disabled={savingMode}
+                    onClick={() => updateMode(m)}
+                    className={cn(
+                      "px-3 py-1 text-xs font-medium rounded capitalize transition-colors",
+                      snowMode === m
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Currently using <span className="font-medium text-foreground capitalize">{snowMode}</span> ServiceNow instance:{" "}
+                <a
+                  href={snowMode === "real" ? "https://dev426633.service-now.com/change_request_list.do" : "https://service-now-changerequest-demo.lovable.app"}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline underline-offset-2 hover:text-primary/80"
+                >
+                  {snowMode === "real" ? "https://dev426633.service-now.com" : "https://service-now-changerequest-demo.lovable.app"}
+                </a>
+              </p>
+            </div>
             <p className="text-xs text-muted-foreground">
               Enter the base URL in LaunchDarkly → Integrations → Custom Approvals → service base URL.
             </p>

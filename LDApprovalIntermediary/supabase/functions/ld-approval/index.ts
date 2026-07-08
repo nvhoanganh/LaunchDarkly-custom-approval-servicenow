@@ -7,9 +7,12 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
 const BEARER_TOKEN = "ld-snow-demo-secret-2026";
-const SNOW_BASE = "https://trhyprcfbjsjothusmco.supabase.co/functions/v1/servicenow";
-const SNOW_TOKEN_URL = `${SNOW_BASE}/oauth_token.do`;
-const SNOW_TABLE_URL = `${SNOW_BASE}/api/now/table/change_request`;
+const SNOW_MOCK_BASE = "https://trhyprcfbjsjothusmco.supabase.co/functions/v1/servicenow";
+const SNOW_REAL_BASE = "https://dev426633.service-now.com";
+const SNOW_REAL_CLIENT_ID = "204734b49a2349138dbc0affe60870a6";
+const SNOW_REAL_CLIENT_SECRET = "Eu6mL$:#.Og!$?`<i7?}ZWRl7|u8.{]g";
+const SNOW_REAL_USERNAME = "ld_integration";
+const SNOW_REAL_PASSWORD = "h9iIt,K:0&Oyj1o<1HUzA1FY_A<u!e)#MK}u(4hrGYRx{x[-(LAT!}%#$HiF{VckL#K+>_0q=kYp&%tT8Mxot8UU;(_r]c=^W3p>";
 
 const APPROVED_STATE = "-1";
 const REJECTED_STATES = ["4"];
@@ -55,17 +58,38 @@ type CRResult = {
 };
 
 async function checkCR(crNumber: string): Promise<CRResult> {
+  let mode: "mock" | "real" = "real";
+  try {
+    const { data: setting } = await supabase
+      .from("app_settings")
+      .select("value")
+      .eq("key", "servicenow_mode")
+      .maybeSingle();
+    if (setting?.value === "mock") mode = "mock";
+  } catch (e) {
+    console.error("app_settings read failed, defaulting to real", e);
+  }
+
+  const base = mode === "real" ? SNOW_REAL_BASE : SNOW_MOCK_BASE;
+  const tokenUrl = `${base}/oauth_token.do`;
+  const tableUrl = `${base}/api/now/table/change_request`;
+  const creds = mode === "real"
+    ? {
+        client_id: SNOW_REAL_CLIENT_ID,
+        client_secret: SNOW_REAL_CLIENT_SECRET,
+        username: SNOW_REAL_USERNAME,
+        password: SNOW_REAL_PASSWORD,
+      }
+    : { client_id: "mock", client_secret: "mock", username: "mock", password: "mock" };
+
   let accessToken: string;
   try {
-    const tokenRes = await fetch(SNOW_TOKEN_URL, {
+    const tokenRes = await fetch(tokenUrl, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         grant_type: "password",
-        client_id: "mock",
-        client_secret: "mock",
-        username: "mock",
-        password: "mock",
+        ...creds,
       }).toString(),
     });
     if (!tokenRes.ok) throw new Error(`token ${tokenRes.status}`);
@@ -83,7 +107,7 @@ async function checkCR(crNumber: string): Promise<CRResult> {
 
   let cr: { number?: string; state?: string } | undefined;
   try {
-    const url = new URL(SNOW_TABLE_URL);
+    const url = new URL(tableUrl);
     url.searchParams.set("sysparm_query", `number=${crNumber}`);
     url.searchParams.set("sysparm_fields", "number,state,sys_id,short_description");
     url.searchParams.set("sysparm_limit", "1");
@@ -142,6 +166,9 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
+  if (req.method === "GET" && !new URL(req.url).pathname.includes("/api/")) {
+    return Response.redirect("https://ld-approval-intermediary.lovable.app", 302);
+  }
   if (!checkAuth(req)) {
     return json(401, { error: "Unauthorized" });
   }
@@ -153,6 +180,62 @@ Deno.serve(async (req) => {
   const segments = path.split("/").filter(Boolean); // ["api","approvals", id?, action?]
 
   try {
+    // GET /api/health/servicenow
+    if (
+      req.method === "GET" &&
+      segments.length === 3 &&
+      segments[0] === "api" &&
+      segments[1] === "health" &&
+      segments[2] === "servicenow"
+    ) {
+      let mode: "mock" | "real" = "real";
+      try {
+        const { data: setting } = await supabase
+          .from("app_settings")
+          .select("value")
+          .eq("key", "servicenow_mode")
+          .maybeSingle();
+        if (setting?.value === "mock") mode = "mock";
+      } catch (_) { /* default real */ }
+
+      const base = mode === "real" ? SNOW_REAL_BASE : SNOW_MOCK_BASE;
+      const creds = mode === "real"
+        ? {
+            client_id: SNOW_REAL_CLIENT_ID,
+            client_secret: SNOW_REAL_CLIENT_SECRET,
+            username: SNOW_REAL_USERNAME,
+            password: SNOW_REAL_PASSWORD,
+          }
+        : { client_id: "mock", client_secret: "mock", username: "mock", password: "mock" };
+
+      try {
+        const tokenRes = await fetch(`${base}/oauth_token.do`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ grant_type: "password", ...creds }).toString(),
+        });
+        if (!tokenRes.ok) throw new Error(`token request failed (${tokenRes.status})`);
+        const tokenJson = await tokenRes.json();
+        const accessToken = tokenJson.access_token;
+        if (!accessToken) throw new Error("no access_token in response");
+
+        if (mode === "real") {
+          const url = new URL(`${base}/api/now/table/change_request`);
+          url.searchParams.set("sysparm_limit", "1");
+          url.searchParams.set("sysparm_fields", "number");
+          const lookupRes = await fetch(url.toString(), {
+            headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+          });
+          if (!lookupRes.ok) throw new Error(`table request failed (${lookupRes.status})`);
+        }
+
+        return json(200, { status: "ok", mode });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return json(200, { status: "error", mode, error: message });
+      }
+    }
+
     // POST /api/approvals
     if (
       req.method === "POST" &&
