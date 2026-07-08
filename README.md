@@ -188,6 +188,8 @@ Pre-deployed instances are available — no setup required:
   - **Custom approval service base URL** → `https://tbwanmbaxlalvjkqhxng.supabase.co/functions/v1/ld-approval`
   - **API Token** → copy from the app using the **Copy** button
 
+> **Note:** The pre-deployed intermediary is currently pointed at a private dev ServiceNow instance. Switch the **ServiceNow Source** toggle to **Mock** in the Health card before trying this — that routes to the public ServiceNow CR Simulator instead.
+
 **To create, approve, or reject Change Requests:**
 - Go to https://service-now-changerequest-demo.lovable.app
 - Create a CR, then use **Approve** / **Reject** / **Reset** buttons to control its state while LD polls
